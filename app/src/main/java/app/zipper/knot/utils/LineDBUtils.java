@@ -46,6 +46,44 @@ public class LineDBUtils {
     return null;
   }
 
+  private static volatile boolean picturePathUnsupported = false;
+
+  // Returns the contact's profile picture path, or null when unavailable (column missing on
+  // newer LINE versions, no picture set, or the contact db cannot be read).
+  public static String resolveMemberPicturePath(String mid) {
+    if (mid == null || picturePathUnsupported) return null;
+    try {
+      Context context = Knot.currentApplication();
+      if (context == null) return null;
+      File dbFile = context.getDatabasePath("contact");
+      if (!dbFile.exists()) return null;
+      SQLiteDatabase db =
+          SQLiteDatabase.openDatabase(dbFile.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+      try {
+        Cursor cursor =
+            db.rawQuery(
+                "SELECT picture_status, picture_path FROM contacts WHERE mid = ? LIMIT 1",
+                new String[] {mid});
+        try {
+          if (cursor.moveToFirst()) {
+            int status = cursor.getInt(0);
+            String path = cursor.getString(1);
+            if (status == 1 && path != null && !path.isEmpty()) return path;
+          }
+          return null;
+        } finally {
+          cursor.close();
+        }
+      } finally {
+        db.close();
+      }
+    } catch (Throwable t) {
+      // Older versions had picture_status=3; any schema mismatch disables the lookup for good
+      picturePathUnsupported = true;
+      return null;
+    }
+  }
+
   public static class ContactTimes {
     public Long friendCreated;
     public Long favorite;
@@ -275,6 +313,35 @@ public class LineDBUtils {
       Knot.log("Knot: resolveChatIdByServerId failed: " + t);
     }
     return null;
+  }
+
+  public static String resolveOwnMessageChatId(String serverId) {
+    String myMid = getMyMid();
+    Context context = Knot.currentApplication();
+    if (serverId == null || myMid == null || context == null) return null;
+    try {
+      File file = context.getDatabasePath("naver_line");
+      if (!file.exists()) return null;
+      SQLiteDatabase db =
+          SQLiteDatabase.openDatabase(file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+      try {
+        // Own messages can also be stored with a null from_mid (see fetchMyMessagesUpTo)
+        Cursor cursor =
+            db.rawQuery(
+                "SELECT chat_id FROM chat_history WHERE server_id = ? AND (from_mid = ? OR from_mid IS NULL) LIMIT 1",
+                new String[] {serverId, myMid});
+        try {
+          return cursor.moveToFirst() ? cursor.getString(0) : null;
+        } finally {
+          cursor.close();
+        }
+      } finally {
+        db.close();
+      }
+    } catch (Throwable t) {
+      Knot.log("Knot: resolveOwnMessageChatId failed: " + t);
+      return null;
+    }
   }
 
   public static String resolveMessageText(String content, String parameter) {

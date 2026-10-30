@@ -36,7 +36,7 @@ Knot is an Xposed module, currently in development, designed to improve the expe
 ## Features
 
 ### Privacy & Messages
-- **Read avoidance / Read history**: Read messages without marking them as read, and mark them as read only when you reply. Knot can also record who read each message and when.
+- **Read avoidance / Read history**: Read messages without marking them as read, and mark them as read only when you reply. Knot can also record who read each message and when. Tap the read label on your own message to see who read it, in a list styled like LINE's reaction list.
 - **Keep unsent messages / Longer unsend limit**: Keeps messages on your device even after the sender unsends them, and extends the time you have to unsend your own messages to 24 hours.
 - **Open links in the default browser**: Opens URLs in your system's default browser instead of the in-app browser.
 - **Lift photo and video sending limits**: Sends at the highest quality by skipping the automatic compression and resizing applied on send, and lets you send videos longer than 5 minutes.

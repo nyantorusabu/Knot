@@ -143,6 +143,7 @@ public class Main extends XposedModule {
 
     // Always installed; self-gates at runtime to avoid the cold-start settings-load race
     applyHook(new ReadReceiptHandler(), lpparam);
+    applyHook(new ReadListHook(), lpparam);
     applyHook(new UnsendProtector(), lpparam);
 
     if (options.preventMarkAsRead.enabled || options.permanentHideChat.enabled) {

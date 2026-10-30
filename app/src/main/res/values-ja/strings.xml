@@ -68,6 +68,8 @@
     <string name="label_send_mark_read">送信後既読</string>
     <string name="label_reaction_mark_read">リアクション後既読</string>
     <string name="read_receipt_viewer">既読者確認</string>
+    <string name="read_list_title">既読</string>
+    <string name="read_list_empty">このメッセージの既読はまだ記録されていません</string>
     <string name="unset_time_prefix">"取消日時: "</string>
     <string name="read_history_title">既読履歴</string>
     <string name="read_history_empty">履歴はありません</string>
