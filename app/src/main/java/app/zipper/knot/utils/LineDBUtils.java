@@ -50,8 +50,7 @@ public class LineDBUtils {
 
   private static volatile boolean picturePathUnsupported = false;
 
-  // Returns the contact's profile picture path, or null when unavailable (column missing on
-  // newer LINE versions, no picture set, or the contact db cannot be read).
+  // A nonempty picture_path is usable regardless of the version-specific picture_status value.
   public static String resolveMemberPicturePath(String mid) {
     if (mid == null || picturePathUnsupported) return null;
     try {
@@ -64,13 +63,11 @@ public class LineDBUtils {
       try {
         Cursor cursor =
             db.rawQuery(
-                "SELECT picture_status, picture_path FROM contacts WHERE mid = ? LIMIT 1",
-                new String[] {mid});
+                "SELECT picture_path FROM contacts WHERE mid = ? LIMIT 1", new String[] {mid});
         try {
           if (cursor.moveToFirst()) {
-            int status = cursor.getInt(0);
-            String path = cursor.getString(1);
-            if (status == 1 && path != null && !path.isEmpty()) return path;
+            String path = cursor.getString(0);
+            if (path != null && !path.isEmpty()) return path;
           }
           return null;
         } finally {
@@ -80,7 +77,7 @@ public class LineDBUtils {
         db.close();
       }
     } catch (Throwable t) {
-      // Older versions had picture_status=3; any schema mismatch disables the lookup for good
+      Knot.log("Knot: profile picture lookup failed: " + t);
       picturePathUnsupported = true;
       return null;
     }

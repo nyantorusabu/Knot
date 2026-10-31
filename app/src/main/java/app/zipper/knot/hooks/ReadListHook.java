@@ -9,6 +9,7 @@ import app.zipper.knot.Reflect;
 import app.zipper.knot.SettingsStore;
 import app.zipper.knot.ui.ReadListViewer;
 import io.github.libxposed.api.XposedInterface;
+import java.lang.reflect.Method;
 
 /**
  * Opens the read-user list (LINE's reaction list design) when the read label of one of my own
@@ -22,30 +23,68 @@ public class ReadListHook implements BaseHook {
   @Override
   public void hook(KnotConfig config, LoadParam param) throws Throwable {
     LineVersion.Config cfg = LineVersion.get();
-    if (cfg == null || cfg.unsend.chatMessageViewHolderClass.isEmpty()) return;
+    if (cfg == null || cfg.unsend.chatMessageViewHolderClass.isEmpty()) {
+      Knot.log("Knot: read list unavailable: message holder mapping missing");
+      return;
+    }
     try {
+      Class<?> holder = Reflect.findClass(cfg.unsend.chatMessageViewHolderClass, param.classLoader);
+      Method bind = findDisplayBind(holder, cfg.unsend.methodBind);
+      if (bind == null) {
+        Knot.log("Knot: read list unavailable: message display bind not found on " + holder);
+        return;
+      }
+      int rowIndex = 2;
       Knot.hookAll(
-          Reflect.findClass(cfg.unsend.chatMessageViewHolderClass, param.classLoader),
-          cfg.unsend.methodBind,
+          holder,
+          bind.getName(),
           chain -> {
             Object result = chain.proceed();
             try {
-              attach(chain, cfg);
+              if (chain.getExecutable().equals(bind)) attach(chain, cfg, rowIndex);
             } catch (Throwable t) {
               Knot.log("Knot: read list bind failed: " + t);
             }
             return result;
           });
+      Knot.log("Knot: read list display bind hook installed: " + bind);
     } catch (Throwable t) {
       Knot.log("Knot: read list hook failed: " + t);
     }
   }
 
+  // The mapped three-argument boolean method only checks whether a row needs rebinding.
+  // The actual display bind takes the same selection provider and row as arguments 0 and 2.
+  private static Method findDisplayBind(Class<?> holder, String checkName) {
+    for (Method check : holder.getDeclaredMethods()) {
+      Class<?>[] checkArgs = check.getParameterTypes();
+      if (!check.getName().equals(checkName)
+          || check.getReturnType() != boolean.class
+          || checkArgs.length != 3) continue;
+      Method match = null;
+      for (Method candidate : holder.getDeclaredMethods()) {
+        Class<?>[] args = candidate.getParameterTypes();
+        if (candidate.getReturnType() != void.class
+            || args.length != 7
+            || args[0] != checkArgs[0]
+            || args[2] != checkArgs[1]
+            || args[3] != int.class
+            || args[4] != checkArgs[2]
+            || args[6] != boolean.class) continue;
+        if (match != null) return null;
+        match = candidate;
+      }
+      if (match != null) return match;
+    }
+    return null;
+  }
+
   // Runs after every message row bind, so listeners follow row recycling without stale ids
-  private static void attach(XposedInterface.Chain chain, LineVersion.Config cfg) throws Throwable {
+  private static void attach(XposedInterface.Chain chain, LineVersion.Config cfg, int rowIndex)
+      throws Throwable {
     if (!SettingsStore.get("record_read_history", false)) return;
 
-    Object data = chain.getArg(cfg.unsend.methodBindIndex);
+    Object data = chain.getArg(rowIndex);
     Object common = data == null ? null : Reflect.callMethod(data, cfg.unsend.methodGetCommonData);
     View root = (View) Reflect.callMethod(chain.getThisObject(), cfg.unsend.methodGetItemView);
     if (common == null || root == null) return;

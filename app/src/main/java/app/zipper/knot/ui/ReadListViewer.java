@@ -1,5 +1,8 @@
 package app.zipper.knot.ui;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
@@ -11,22 +14,28 @@ import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.util.LruCache;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
-import androidx.recyclerview.widget.LinearLayoutManager;
-import androidx.recyclerview.widget.RecyclerView;
 import app.zipper.knot.Knot;
 import app.zipper.knot.R;
 import app.zipper.knot.SettingsStore;
@@ -35,7 +44,6 @@ import app.zipper.knot.utils.LineTheme;
 import app.zipper.knot.utils.ModuleResources;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
-import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
@@ -69,7 +77,7 @@ public class ReadListViewer {
   private static final int SHEET_RADIUS_DP = 14;
   private static final int SHEET_PEEK_HEIGHT_DP = 336;
   private static final float DIM_AMOUNT = 0.7f; // MessageReactionSheet backgroundDimAmount
-  private static final int BOTTOM_SHEET_STATE_EXPANDED = 3;
+  private static final int ANIMATION_MS = 240;
 
   private static final LruCache<String, Bitmap> AVATAR_CACHE = new LruCache<>(64);
   private static final java.util.Set<String> IN_FLIGHT =
@@ -155,27 +163,47 @@ public class ReadListViewer {
     sheet.setOrientation(LinearLayout.VERTICAL);
     sheet.setBackground(sheetBackground(activity));
 
-    final Dialog[] dialogRef = new Dialog[1];
-    sheet.addView(
-        header(
-            activity,
-            () -> {
-              Dialog dialog = dialogRef[0];
-              if (dialog != null) dialog.dismiss();
-            }));
+    Dialog dialog = new Dialog(activity);
+    dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+    dialog.setCancelable(true);
+    dialog.setCanceledOnTouchOutside(true);
+    FrameLayout overlay = new FrameLayout(activity);
+    int peek = lineDimen(activity, "chat_ui_reactionsheet_peek_height", SHEET_PEEK_HEIGHT_DP);
+    SheetDrag drag = new SheetDrag(activity, dialog, overlay, sheet, peek);
+    overlay.setOnClickListener(v -> drag.close());
+    sheet.setClickable(true);
+    View header = header(activity, drag::close);
+    sheet.addView(header);
 
-    RecyclerView list = new RecyclerView(activity);
-    list.setLayoutManager(new LinearLayoutManager(activity));
+    ListView list = new ListView(activity);
+    list.setDivider(null);
     list.setAdapter(new ReaderAdapter(activity, readers));
-    sheet.addView(
-        list,
-        new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    sheet.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-    Dialog dialog = bottomSheet(activity, sheet);
-    dialogRef[0] = dialog;
+    FrameLayout.LayoutParams sheetParams =
+        new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, peek, Gravity.BOTTOM);
+    overlay.addView(sheet, sheetParams);
+    header.setOnTouchListener(drag);
+
+    dialog.setContentView(overlay);
+    Window window = dialog.getWindow();
+    if (window != null) {
+      window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+      window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+      window.setDimAmount(DIM_AMOUNT);
+    }
     dialog.show();
-    applyDim(dialog);
+    if (window != null) {
+      window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+    }
+    sheet.setVisibility(View.INVISIBLE);
+    sheet.post(
+        () -> {
+          if (!dialog.isShowing()) return;
+          sheet.setTranslationY(sheet.getHeight());
+          sheet.setVisibility(View.VISIBLE);
+          sheet.animate().translationY(0).setDuration(ANIMATION_MS).start();
+        });
   }
 
   // chat_ui_reaction_sheet: rounded-top background, centred bold title, close button top-right
@@ -222,50 +250,136 @@ public class ReadListViewer {
     return background;
   }
 
-  // MessageReactionSheet extends Theme.Design.Light.BottomSheetDialog with peek height 336dp
-  private static Dialog bottomSheet(Activity activity, View sheet) {
-    try {
-      // The material classes ship inside LINE's APK, so resolve them through LINE's loader
-      Class<?> cls =
-          activity
-              .getClassLoader()
-              .loadClass("com.google.android.material.bottomsheet.BottomSheetDialog");
-      // LINE's own MessageReactionSheet style: dim 0.7, transparent window background
-      int styleId = identifier(activity, "MessageReactionSheet", "style");
-      Dialog dialog =
-          styleId != 0
-              ? (Dialog) cls.getConstructor(Context.class, int.class).newInstance(activity, styleId)
-              : (Dialog) cls.getConstructor(Context.class).newInstance(activity);
-      Method setContentView = cls.getMethod("setContentView", View.class);
-      setContentView.invoke(dialog, sheet);
-      Method getBehavior = cls.getMethod("getBehavior");
-      Object behavior = getBehavior.invoke(dialog);
-      int peek = lineDimen(activity, "chat_ui_reactionsheet_peek_height", SHEET_PEEK_HEIGHT_DP);
-      behavior.getClass().getMethod("setPeekHeight", int.class).invoke(behavior, peek);
-      behavior
-          .getClass()
-          .getMethod("setState", int.class)
-          .invoke(behavior, BOTTOM_SHEET_STATE_EXPANDED);
-      return dialog;
-    } catch (Throwable t) {
-      Knot.log("Knot: BottomSheetDialog unavailable, falling back: " + t);
-      Dialog dialog = new Dialog(activity, LineTheme.dialogTheme(activity));
-      dialog.setContentView(sheet);
-      dialog.setCancelable(true);
-      dialog.getWindow().setGravity(Gravity.BOTTOM);
-      dialog
-          .getWindow()
-          .setLayout(
-              ViewGroup.LayoutParams.MATCH_PARENT,
-              lineDimen(activity, "chat_ui_reactionsheet_peek_height", SHEET_PEEK_HEIGHT_DP));
-      return dialog;
-    }
-  }
+  private static final class SheetDrag implements View.OnTouchListener {
+    private final Dialog dialog;
+    private final View overlay;
+    private final View sheet;
+    private final int desiredPeek;
+    private final int touchSlop;
+    private final int flingVelocity;
+    private VelocityTracker velocity;
+    private ValueAnimator animator;
+    private float downY;
+    private int startHeight;
+    private boolean dragging;
+    private boolean closing;
 
-  private static void applyDim(Dialog dialog) {
-    try {
-      if (dialog.getWindow() != null) dialog.getWindow().setDimAmount(DIM_AMOUNT);
-    } catch (Throwable ignored) {
+    SheetDrag(Activity activity, Dialog dialog, View overlay, View sheet, int peek) {
+      this.dialog = dialog;
+      this.overlay = overlay;
+      this.sheet = sheet;
+      desiredPeek = peek;
+      ViewConfiguration config = ViewConfiguration.get(activity);
+      touchSlop = config.getScaledTouchSlop();
+      flingVelocity = Math.max(config.getScaledMinimumFlingVelocity(), dp(activity, 500));
+    }
+
+    @Override
+    public boolean onTouch(View view, MotionEvent event) {
+      switch (event.getActionMasked()) {
+        case MotionEvent.ACTION_DOWN:
+          if (closing) return true;
+          cancelAnimation();
+          sheet.animate().cancel();
+          sheet.setTranslationY(0);
+          downY = event.getRawY();
+          startHeight = sheet.getLayoutParams().height;
+          dragging = false;
+          if (velocity != null) velocity.recycle();
+          velocity = VelocityTracker.obtain();
+          track(event);
+          return true;
+        case MotionEvent.ACTION_MOVE:
+          if (velocity == null) return true;
+          track(event);
+          float delta = event.getRawY() - downY;
+          if (Math.abs(delta) > touchSlop) dragging = true;
+          if (dragging) setHeight(Math.round(startHeight - delta));
+          return true;
+        case MotionEvent.ACTION_UP:
+        case MotionEvent.ACTION_CANCEL:
+          if (velocity == null) return true;
+          track(event);
+          velocity.computeCurrentVelocity(1000);
+          float speed = velocity.getYVelocity();
+          velocity.recycle();
+          velocity = null;
+          if (!dragging) {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) view.performClick();
+            return true;
+          }
+          int height = sheet.getLayoutParams().height;
+          int max = maxHeight();
+          int peek = Math.min(desiredPeek, max);
+          int target;
+          if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            target = height > (peek + max) / 2 ? max : peek;
+          } else if (speed < -flingVelocity) {
+            target = height < peek / 2 ? peek : max;
+          } else if (speed > flingVelocity) {
+            target = height > peek + touchSlop ? peek : 0;
+          } else if (height < peek / 2) {
+            target = 0;
+          } else {
+            target = height > (peek + max) / 2 ? max : peek;
+          }
+          snap(target);
+          return true;
+        default:
+          return true;
+      }
+    }
+
+    private int maxHeight() {
+      return Math.max(1, overlay.getHeight());
+    }
+
+    // Header-local coordinates change as the sheet moves; track velocity in screen coordinates.
+    private void track(MotionEvent event) {
+      MotionEvent screenEvent = MotionEvent.obtain(event);
+      screenEvent.offsetLocation(event.getRawX() - event.getX(), event.getRawY() - event.getY());
+      velocity.addMovement(screenEvent);
+      screenEvent.recycle();
+    }
+
+    private void setHeight(int height) {
+      ViewGroup.LayoutParams params = sheet.getLayoutParams();
+      params.height = Math.max(0, Math.min(maxHeight(), height));
+      sheet.setLayoutParams(params);
+    }
+
+    private void cancelAnimation() {
+      if (animator != null) {
+        animator.cancel();
+        animator = null;
+      }
+    }
+
+    void close() {
+      if (!closing) snap(0);
+    }
+
+    private void snap(int target) {
+      cancelAnimation();
+      closing = target == 0;
+      animator = ValueAnimator.ofInt(sheet.getLayoutParams().height, target);
+      animator.setDuration(ANIMATION_MS);
+      animator.addUpdateListener(animation -> setHeight((Integer) animation.getAnimatedValue()));
+      animator.addListener(
+          new AnimatorListenerAdapter() {
+            private boolean cancelled;
+
+            @Override
+            public void onAnimationCancel(Animator animation) {
+              cancelled = true;
+            }
+
+            @Override
+            public void onAnimationEnd(Animator animation) {
+              if (!cancelled && target == 0 && dialog.isShowing()) dialog.dismiss();
+            }
+          });
+      animator.start();
     }
   }
 
@@ -318,11 +432,12 @@ public class ReadListViewer {
       return true;
     } catch (Throwable t) {
       lineGlideAvailable = false;
+      Knot.log("Knot: LINE profile image loader unavailable; using URL fallback: " + t);
       return false;
     }
   }
 
-  private static final class ReaderAdapter extends RecyclerView.Adapter<ReaderAdapter.Holder> {
+  private static final class ReaderAdapter extends BaseAdapter {
 
     private final Activity activity;
     private final List<Reader> readers;
@@ -333,13 +448,27 @@ public class ReadListViewer {
     }
 
     @Override
-    public Holder onCreateViewHolder(ViewGroup parent, int viewType) {
+    public View getView(int position, View convertView, ViewGroup parent) {
+      Holder holder;
+      if (convertView == null) {
+        holder = createHolder();
+        convertView = holder.item;
+        convertView.setTag(holder);
+      } else {
+        holder = (Holder) convertView.getTag();
+      }
+      bind(holder, readers.get(position));
+      return convertView;
+    }
+
+    private Holder createHolder() {
       RelativeLayout item = new RelativeLayout(activity);
       int paddingH = dp(activity, ITEM_PADDING_H_DP);
       item.setPadding(paddingH, 0, paddingH, 0);
 
       ImageView avatar = new ImageView(activity);
       avatar.setId(View.generateViewId());
+      avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
       avatar.setClipToOutline(true);
       avatar.setOutlineProvider(circleProvider());
       RelativeLayout.LayoutParams avatarLp =
@@ -365,9 +494,7 @@ public class ReadListViewer {
       return new Holder(item, avatar, name);
     }
 
-    @Override
-    public void onBindViewHolder(Holder holder, int position) {
-      Reader reader = readers.get(position);
+    private void bind(Holder holder, Reader reader) {
       holder.name.setText(reader.name);
       if (loadWithLineGlide(activity, holder.avatar, reader.mid, reader.picturePath)) return;
       Bitmap cached = AVATAR_CACHE.get(reader.mid);
@@ -380,8 +507,18 @@ public class ReadListViewer {
     }
 
     @Override
-    public int getItemCount() {
+    public int getCount() {
       return readers.size();
+    }
+
+    @Override
+    public Reader getItem(int position) {
+      return readers.get(position);
+    }
+
+    @Override
+    public long getItemId(int position) {
+      return position;
     }
 
     // One background fetch per member; rows refresh as pictures arrive
@@ -428,12 +565,13 @@ public class ReadListViewer {
       }
     }
 
-    private static final class Holder extends RecyclerView.ViewHolder {
+    private static final class Holder {
+      final View item;
       final ImageView avatar;
       final TextView name;
 
       Holder(View item, ImageView avatar, TextView name) {
-        super(item);
+        this.item = item;
         this.avatar = avatar;
         this.name = name;
       }
