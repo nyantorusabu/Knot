@@ -23,6 +23,7 @@ import app.zipper.knot.LineVersion;
 import app.zipper.knot.Main;
 import app.zipper.knot.RestartActivity;
 import app.zipper.knot.SettingsStore;
+import app.zipper.knot.mapping.Mappings;
 import app.zipper.knot.ui.settings.KnotSettingsDialog;
 import app.zipper.knot.utils.LineTheme;
 import app.zipper.knot.utils.ModuleResources;
@@ -40,6 +41,8 @@ public final class DebugMenu {
 
   private static WeakReference<Activity> foreground = new WeakReference<>(null);
   private static WeakReference<AlertDialog> shown = new WeakReference<>(null);
+  private static volatile SensorManager sensorManager;
+  private static volatile Sensor accelerometerSensor;
 
   private DebugMenu() {}
 
@@ -49,6 +52,17 @@ public final class DebugMenu {
     new Handler(Looper.getMainLooper()).postAtFrontOfQueue(DebugMenu::register);
   }
 
+  public static void refreshRegistration() {
+    SensorManager sm = sensorManager;
+    Sensor accel = accelerometerSensor;
+    if (sm == null || accel == null) return;
+    sm.unregisterListener(detector);
+    if (Main.options.debugMenu.enabled && foreground.get() != null) {
+      detector.reset();
+      sm.registerListener(detector, accel, SensorManager.SENSOR_DELAY_UI);
+    }
+  }
+
   private static void register() {
     Application app = Knot.currentApplication();
     if (app == null) return;
@@ -56,6 +70,8 @@ public final class DebugMenu {
     Sensor accelerometer =
         sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
     if (accelerometer == null) return;
+    sensorManager = sensors;
+    accelerometerSensor = accelerometer;
     app.registerActivityLifecycleCallbacks(new Lifecycle(sensors, accelerometer));
   }
 
@@ -221,8 +237,12 @@ public final class DebugMenu {
             ? info.getLongVersionCode()
             : info.versionCode;
     String version = info.versionName + " (" + code + ")";
-    if (LineVersion.get() != null) return version;
-    return version + ", unsupported (supported: " + LineVersion.getSupportedVersions() + ")";
+    LineVersion.Config config = LineVersion.get();
+    if (config == null) return version + ", mappings unavailable";
+    List<String> unresolved = Mappings.unresolved(config, info.versionName);
+    return unresolved.isEmpty()
+        ? version
+        : version + ", " + unresolved.size() + " unresolved: " + String.join(", ", unresolved);
   }
 
   private static String framework() {

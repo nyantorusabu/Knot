@@ -33,11 +33,14 @@ public class EditHistoryHook implements BaseHook {
   private static final String ICON_DRAWABLE = "clock_edit";
   private static final int ICON_ID = 0x64000010;
   private static final String APPCOMPAT_IMAGE_VIEW = "androidx.appcompat.widget.AppCompatImageView";
+  private static final String TIME_FMT = "yyyy/MM/dd HH:mm:ss";
 
   private static final Map<String, JSONArray> cache = new ConcurrentHashMap<>();
   private static final Object persistLock = new Object();
   private static volatile boolean loaded = false;
   private static LineVersion.Config.MessageEditHistory cfg;
+  private static volatile Object menuItem;
+  private static volatile Object menuAction;
 
   @Override
   public void hook(KnotConfig config, LoadParam lpparam) throws Throwable {
@@ -46,7 +49,7 @@ public class EditHistoryHook implements BaseHook {
     if (version == null || version.messageEditHistory.editRequestClass.isEmpty()) return;
     cfg = version.messageEditHistory;
 
-    loadCache();
+    new Thread(EditHistoryHook::loadCache, "Knot-EditHistory").start();
     hookCapture(lpparam.classLoader);
     hookMenu(lpparam.classLoader);
     hookIcon(lpparam.classLoader);
@@ -77,6 +80,7 @@ public class EditHistoryHook implements BaseHook {
 
   private static void record(String msgId, String newText) {
     if (msgId.isEmpty() || "null".equals(msgId)) return;
+    loadCache();
     synchronized (persistLock) {
       JSONArray versions = cache.get(msgId);
       try {
@@ -84,12 +88,13 @@ public class EditHistoryHook implements BaseHook {
           versions = new JSONArray();
           String oldText = LineDBUtils.resolveMessageContent(msgId);
           if (oldText != null && !oldText.isEmpty() && !oldText.equals(newText)) {
-            versions.put(version(oldText, ""));
+            long createdTime = LineDBUtils.resolveMessageCreatedTime(msgId);
+            versions.put(version(oldText, createdTime > 0 ? formatTime(createdTime) : ""));
           }
         } else if (newText.equals(lastText(versions))) {
           return;
         }
-        versions.put(version(newText, now()));
+        versions.put(version(newText, formatTime(System.currentTimeMillis())));
         cache.put(msgId, versions);
         persist();
       } catch (Throwable ignored) {
@@ -102,39 +107,43 @@ public class EditHistoryHook implements BaseHook {
     if (cfg.menuListBuilderClass.isEmpty()) return;
     try {
       Class<?> presentationEnum = Reflect.findClass(cfg.menuPresentationEnumClass, cl);
-      Object item = enumConstant(Reflect.findClass(cfg.menuItemEnumClass, cl), PLACEHOLDER_ITEM);
-      final Object placeholder = enumConstant(presentationEnum, PLACEHOLDER_ITEM);
-      final Object action = buildAction(cl);
 
-      hookMenuList(cl, item);
+      hookMenuList(cl);
 
       Knot.module
           .hook(Reflect.findMethodExact(presentationEnum, cfg.methodMenuLabel, Context.class))
           .intercept(
               chain ->
-                  forPlaceholder(
-                      chain, placeholder, ModuleResources.get(R.string.edit_history_title)));
+                  isPlaceholder(chain)
+                      ? ModuleResources.get(R.string.edit_history_title)
+                      : chain.proceed());
 
       Knot.module
           .hook(Reflect.findMethodExact(presentationEnum, cfg.methodMenuIcon))
-          .intercept(chain -> forPlaceholder(chain, placeholder, ICON_ID));
+          .intercept(chain -> isPlaceholder(chain) ? ICON_ID : chain.proceed());
 
       Knot.module
           .hook(Reflect.findMethodExact(presentationEnum, cfg.methodMenuActionAccessor))
-          .intercept(chain -> forPlaceholder(chain, placeholder, action));
+          .intercept(
+              chain -> {
+                Object action = isPlaceholder(chain) ? action(cl) : null;
+                return action != null ? action : chain.proceed();
+              });
     } catch (Throwable t) {
       Knot.log("Knot: edit history menu hook failed: " + t);
     }
   }
 
-  private static void hookMenuList(ClassLoader cl, Object item) throws Throwable {
+  private static void hookMenuList(ClassLoader cl) throws Throwable {
     Knot.hookAll(
         Reflect.findClass(cfg.menuListBuilderClass, cl),
         cfg.menuListMethod,
         chain -> {
           Object result = chain.proceed();
           if (!Main.options.showEditHistory.enabled || !(result instanceof List)) return result;
-          return isEdited(messageData(chain.getArg(2))) ? withItem((List<?>) result, item) : result;
+          if (!isEdited(messageData(chain.getArg(2)))) return result;
+          Object item = menuItem(cl);
+          return item != null && action(cl) != null ? withItem((List<?>) result, item) : result;
         });
   }
 
@@ -144,10 +153,34 @@ public class EditHistoryHook implements BaseHook {
     return copy;
   }
 
-  private static Object forPlaceholder(
-      XposedInterface.Chain chain, Object placeholder, Object value) throws Throwable {
-    if (Main.options.showEditHistory.enabled && chain.getThisObject() == placeholder) return value;
-    return chain.proceed();
+  // By name, so the menu enums and the action proxy are not built at startup
+  private static boolean isPlaceholder(XposedInterface.Chain chain) {
+    Object self = chain.getThisObject();
+    return Main.options.showEditHistory.enabled
+        && self instanceof Enum
+        && PLACEHOLDER_ITEM.equals(((Enum<?>) self).name());
+  }
+
+  private static Object menuItem(ClassLoader cl) {
+    if (menuItem == null) {
+      try {
+        menuItem = enumConstant(Reflect.findClass(cfg.menuItemEnumClass, cl), PLACEHOLDER_ITEM);
+      } catch (Throwable t) {
+        Knot.log("Knot: edit history menu item unavailable: " + t);
+      }
+    }
+    return menuItem;
+  }
+
+  private static Object action(ClassLoader cl) {
+    if (menuAction == null) {
+      try {
+        menuAction = buildAction(cl);
+      } catch (Throwable t) {
+        Knot.log("Knot: edit history menu action unavailable: " + t);
+      }
+    }
+    return menuAction;
   }
 
   private static Object buildAction(ClassLoader cl) throws Throwable {
@@ -215,11 +248,14 @@ public class EditHistoryHook implements BaseHook {
   }
 
   public static JSONArray historyFor(String msgId) {
-    return msgId == null ? null : cache.get(msgId);
+    if (msgId == null) return null;
+    loadCache();
+    return cache.get(msgId);
   }
 
   public static void clearHistory(String msgId) {
     if (msgId == null) return;
+    loadCache();
     synchronized (persistLock) {
       cache.remove(msgId);
       persist();
@@ -267,8 +303,8 @@ public class EditHistoryHook implements BaseHook {
     return last == null ? null : last.optString("t", null);
   }
 
-  private static String now() {
-    return new SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.getDefault()).format(new Date());
+  public static String formatTime(long epochMs) {
+    return new SimpleDateFormat(TIME_FMT, Locale.getDefault()).format(new Date(epochMs));
   }
 
   private static Object kotlinUnit(ClassLoader cl) {

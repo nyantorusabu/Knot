@@ -46,6 +46,9 @@
     <string name="manager_restart_required">LINEの再起動が必要です</string>
     <string name="opt_restart_label">LINEを再起動</string>
     <string name="opt_restart_desc">Knotを読み込み直すためにLINEを再起動します。</string>
+    <string name="opt_reset_mappings_label">マッピングのリセット</string>
+    <string name="opt_reset_mappings_desc">次回の起動時にLINEの難読化された名前を再検索します。</string>
+    <string name="opt_reset_mappings_confirm">マッピングキャッシュを削除しますか？</string>
     <string name="restart_title">再起動の確認</string>
     <string name="restart_message">設定を反映させるにはLINEの再起動が必要です。今すぐ再起動しますか？</string>
     <string name="restart_now_confirm">LINEを再起動しますか？</string>
@@ -54,6 +57,11 @@
     <string name="release_notes_open">GitHubで見る</string>
     <string name="warn_storage_unset">⚠ Knot: 保存先が未設定です。タップして設定してください。</string>
     <string name="unsupported_version_msg">このバージョンのLINEはサポートされていません。</string>
+    <string name="broken_features_title">一部の機能が動作しません</string>
+    <string name="broken_features_msg">LINE %1$s では、次の機能のフック先が見つからないため動作しません。</string>
+    <string name="patcher_warning_title">Fork版NPatchでパッチされていません</string>
+    <string name="patcher_warning_msg">このLINEは %1$s でパッチされています。非Root環境のKnotはFork版NPatch（NPatch for Knot）向けに作られているため、一部の機能が正しく動作しない場合があります。[READMEのインストール手順](%2$s)に従ってパッチし直してください。</string>
+    <string name="patcher_warning_readme_url" formatted="false">https://github.com/2b-zipper/Knot/blob/main/README.md#%E9%9D%9Eroot%E7%92%B0%E5%A2%83</string>
     <!-- Backup / restore -->
     <string name="backup_success">バックアップが完了しました。</string>
     <string name="backup_error">バックアップに失敗しました。</string>

@@ -84,6 +84,8 @@ public class RemoveHomeContents implements BaseHook {
             });
 
     hookHome26ModuleFiltering(config, lpparam);
+    hookHomeFlexFiltering(config, lpparam);
+    hookHome26ServiceCards(config, lpparam);
   }
 
   private static void hookHome26ModuleFiltering(KnotConfig config, LoadParam lpparam) {
@@ -109,19 +111,12 @@ public class RemoveHomeContents implements BaseHook {
 
                 List<?> modules = args[0] instanceof List ? (List<?>) args[0] : null;
                 if (modules != null && !modules.isEmpty()) {
-                  Set<String> feedPrefixes = prefixSet(cfg.home.home26FeedTypePrefixes);
-                  Set<String> svcPrefixes = prefixSet(cfg.home.home26ServiceTypePrefixes);
+                  Set<String> feedPrefixes = csvSet(cfg.home.home26FeedTypePrefixes);
+                  Set<String> svcPrefixes = csvSet(cfg.home.home26ServiceTypePrefixes);
                   List<Object> filtered = new ArrayList<>();
                   boolean changed = false;
                   for (Object w : modules) {
-                    Object body =
-                        w != null
-                            ? Reflect.getObjectField(w, cfg.home.home26ModuleBodyField)
-                            : null;
-                    String type =
-                        body != null
-                            ? (String) Reflect.callMethod(body, cfg.home.home26ModuleTypeMethod)
-                            : "";
+                    String type = moduleType(cfg, w);
                     boolean remove =
                         (feedOff && hasAnyPrefix(type, feedPrefixes))
                             || (svcOff && hasAnyPrefix(type, svcPrefixes));
@@ -145,6 +140,44 @@ public class RemoveHomeContents implements BaseHook {
     } catch (Throwable t) {
       Knot.log("Knot: RemoveHomeContents HOME26 module filtering hook failed: " + t);
     }
+  }
+
+  // FLEX also fills the shopping tab, so it needs the page id the module filter never sees
+  private static void hookHomeFlexFiltering(KnotConfig config, LoadParam lpparam) {
+    LineVersion.Config cfg = LineVersion.get();
+    if (cfg == null || cfg.home.homePageWithModulesClass.isEmpty()) return;
+    try {
+      Set<String> homePages = csvSet(cfg.home.homePageIds);
+      Class<?> pageCls = Reflect.findClass(cfg.home.homePageWithModulesClass, lpparam.classLoader);
+      for (Constructor<?> ctor : pageCls.getDeclaredConstructors()) {
+        Class<?>[] params = ctor.getParameterTypes();
+        if (params.length < 3 || params[2] != List.class) continue;
+        Knot.module
+            .hook(ctor)
+            .intercept(
+                chain -> {
+                  if (!homePages.contains(String.valueOf(chain.getArg(0)))
+                      || !SettingsStore.get(
+                          config.removeHomeRecommendations.key,
+                          config.removeHomeRecommendations.enabled)) {
+                    return chain.proceed();
+                  }
+                  Object[] args = chain.getArgs().toArray();
+                  List<Object> kept = new ArrayList<>((List<?>) args[2]);
+                  kept.removeIf(
+                      module -> cfg.home.homeFlexModuleType.equals(moduleType(cfg, module)));
+                  args[2] = kept;
+                  return chain.proceed(args);
+                });
+      }
+    } catch (Throwable t) {
+      Knot.log("Knot: RemoveHomeContents home FLEX filtering hook failed: " + t);
+    }
+  }
+
+  private static String moduleType(LineVersion.Config cfg, Object module) {
+    Object body = Reflect.getObjectField(module, cfg.home.home26ModuleBodyField);
+    return (String) Reflect.callMethod(body, cfg.home.home26ModuleTypeMethod);
   }
 
   // 26.15.0 appended a parameter, so only the leading ones are matched.
@@ -175,7 +208,7 @@ public class RemoveHomeContents implements BaseHook {
     return match;
   }
 
-  private static Set<String> prefixSet(String csv) {
+  private static Set<String> csvSet(String csv) {
     Set<String> out = new HashSet<>();
     if (csv != null) {
       for (String s : csv.split(",")) {
@@ -192,6 +225,59 @@ public class RemoveHomeContents implements BaseHook {
       if (value.startsWith(p)) return true;
     }
     return false;
+  }
+
+  private static void hookHome26ServiceCards(KnotConfig config, LoadParam lpparam) {
+    LineVersion.Config cfg = LineVersion.get();
+    if (cfg == null
+        || cfg.home.home26FixedServiceCardClass.isEmpty()
+        || cfg.home.home26RecentServiceCardClass.isEmpty()
+        || cfg.home.home26CalendarCardClass.isEmpty()) return;
+    try {
+      ClassLoader cl = lpparam.classLoader;
+      Class<?> fixed = Reflect.findClass(cfg.home.home26FixedServiceCardClass, cl);
+      Class<?> recent = Reflect.findClass(cfg.home.home26RecentServiceCardClass, cl);
+      Class<?> calendar = Reflect.findClass(cfg.home.home26CalendarCardClass, cl);
+      // The server sends the carousel as either one
+      for (String holder :
+          new String[] {cfg.home.home26ActivityCardClass, cfg.home.home26HybridCardClass}) {
+        if (holder.isEmpty()) continue;
+        for (Constructor<?> ctor : Reflect.findClass(holder, cl).getDeclaredConstructors()) {
+          Class<?>[] params = ctor.getParameterTypes();
+          if (params.length == 0 || params[0] != ArrayList.class) continue;
+          Knot.module
+              .hook(ctor)
+              .intercept(
+                  chain -> {
+                    Object[] args = chain.getArgs().toArray();
+                    if (!(args[0] instanceof List)
+                        || !SettingsStore.get(
+                            config.removeHomeServices.key, config.removeHomeServices.enabled)) {
+                      return chain.proceed();
+                    }
+                    args[0] = withoutServices((List<?>) args[0], fixed, recent, calendar);
+                    return chain.proceed(args);
+                  });
+        }
+        Knot.log("Knot: RemoveHomeContents HOME26 service cards hooked: " + holder);
+      }
+    } catch (Throwable t) {
+      Knot.log("Knot: RemoveHomeContents HOME26 service cards hook failed", t);
+    }
+  }
+
+  private static ArrayList<Object> withoutServices(
+      List<?> cards, Class<?> fixed, Class<?> recent, Class<?> calendar) {
+    ArrayList<Object> kept = new ArrayList<>();
+    boolean onlyCalendar = true;
+    for (Object card : cards) {
+      if (fixed.isInstance(card) || recent.isInstance(card)) continue;
+      kept.add(card);
+      onlyCalendar &= calendar.isInstance(card);
+    }
+    // The row keeps its height when no card draws, and calendar draws only with events
+    if (kept.size() < cards.size() && onlyCalendar) kept.clear();
+    return kept;
   }
 
   private static void hideView(View target) {

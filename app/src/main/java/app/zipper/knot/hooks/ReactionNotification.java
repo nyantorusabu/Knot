@@ -62,9 +62,9 @@ public class ReactionNotification implements BaseHook {
                 if (chatId == null) chatId = activity.getIntent().getStringExtra("chat_id");
 
                 if (chatId == null) {
-                  Object request = Reflect.getObjectField(activity, cfg.chat.chatIdField);
+                  Object request = Reflect.getObjectField(activity, cfg.chatActivity.chatIdField);
                   if (request != null) {
-                    chatId = (String) Reflect.callMethod(request, cfg.chat.methodGetChatId);
+                    chatId = (String) Reflect.callMethod(request, cfg.chatActivity.methodGetChatId);
                   }
                 }
                 currentChatMid = chatId;
@@ -337,7 +337,10 @@ public class ReactionNotification implements BaseHook {
 
     PendingIntent pi =
         PendingIntent.getActivity(
-            context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            context,
+            notifId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
     Notification.Builder builder =
         (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
